@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GEO-SEQUENCE | Brutalist Earth Obs</title>
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>GEO-SEQUENCE_</h1>
+            <p>SENTINEL-2 TIME-LAPSE ANALYSIS</p>
+        </header>
+
+        <main class="dashboard-grid">
+            <div class="card map-container">
+                <div id="map"></div>
+                <div class="map-overlay">
+                    <div class="date-picker">
+                        <label>START_DATE</label>
+                        <input type="date" id="startDate">
+                    </div>
+                    <div class="date-picker">
+                        <label>END_DATE</label>
+                        <input type="date" id="endDate">
+                    </div>
+                    <div class="instruction">SELECT_AOI</div>
+                </div>
+            </div>
+
+            <div id="imagery-section" class="card imagery-container">
+                <div id="welcome-msg">
+                    <h3>NO DATA</h3>
+                    <p>CLICK MAP TO INITIALIZE SEQUENCE</p>
+                </div>
+                <div id="loading" class="hidden">
+                    <div class="spinner"></div>
+                    <p>FETCHING_STAC_ITEMS...</p>
+                </div>
+                <!-- Previews (only shown when loaded) -->
+                <div class="preview-box frame-view hidden">
+                    <h4>LATEST_RGB_SCENE</h4>
+                    <img id="rgbPreview" src="" alt="RGB Preview">
+                </div>
+                <div class="preview-box frame-view hidden">
+                    <h4>NDVI_HEATMAP_MASK</h4>
+                    <img id="maskPreview" src="" alt="NDVI Mask">
+                </div>
+            </div>
+
+            <div class="card chart-container">
+                <canvas id="ndviChart"></canvas>
+            </div>
+
+            <!-- Timelapse Controls -->
+            <div id="controls" class="timelapse-controls hidden">
+                <button id="playBtn" class="play-btn">PLAY</button>
+                <input type="range" id="frameSlider" class="slider" min="0" value="0">
+                <span id="scene-date" class="scene-date">YYYY-MM-DD</span>
+            </div>
+        </main>
+
+        <footer>
+            MS_PLANETARY_COMPUTER // SENTINEL-2_L2A
+        </footer>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map').setView([20, 0], 2);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        // Initialize Dates
+        const today = new Date();
+        const lastYear = new Date();
+        lastYear.setFullYear(today.getFullYear() - 1);
+
+        document.getElementById('endDate').value = today.toISOString().split('T')[0];
+        document.getElementById('startDate').value = lastYear.toISOString().split('T')[0];
+
+        let marker;
+        let ndviChart;
+        let frames = [];
+        let currentFrame = 0;
+        let isPlaying = false;
+        let playInterval;
+
+        map.on('click', function (e) {
+            const lat = e.latlng.lat;
+            const lon = e.latlng.lng;
+
+            if (marker) map.removeLayer(marker);
+            marker = L.marker([lat, lon]).addTo(map);
+
+            fetchData(lat, lon);
+        });
+
+        async function fetchData(lat, lon) {
+            const loading = document.getElementById('loading');
+            const welcome = document.getElementById('welcome-msg');
+            const frameViews = document.querySelectorAll('.frame-view');
+            const controls = document.getElementById('controls');
+
+            loading.classList.remove('hidden');
+            welcome.classList.add('hidden');
+            frameViews.forEach(v => v.classList.add('hidden'));
+            controls.classList.add('hidden');
+            stopTimelapse();
+
+            try {
+                const startDate = document.getElementById('startDate').value;
+                const endDate = document.getElementById('endDate').value;
+
+                const response = await fetch('/api/timeseries', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ lat, lon, start_date: startDate, end_date: endDate })
+                });
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    frames = result.frames;
+                    updateChart(result.data);
+
+                    // Initialize Slider
+                    const slider = document.getElementById('frameSlider');
+                    slider.max = frames.length - 1;
+                    slider.value = 0;
+
+                    showFrame(0);
+
+                    loading.classList.add('hidden');
+                    frameViews.forEach(v => v.classList.remove('hidden'));
+                    controls.classList.remove('hidden');
+                } else {
+                    alert('Error: ' + result.error);
+                    loading.classList.add('hidden');
+                    welcome.classList.remove('hidden');
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Connection failure');
+                loading.classList.add('hidden');
+                welcome.classList.remove('hidden');
+            }
+        }
+
+        function showFrame(idx) {
+            if (!frames[idx]) return;
+            currentFrame = idx;
+            document.getElementById('rgbPreview').src = `data:image/png;base64,${frames[idx].rgb}`;
+            document.getElementById('maskPreview').src = `data:image/png;base64,${frames[idx].mask}`;
+            document.getElementById('scene-date').innerText = frames[idx].date;
+            document.getElementById('frameSlider').value = idx;
+        }
+
+        function updateChart(data) {
+            const ctx = document.getElementById('ndviChart').getContext('2d');
+            if (ndviChart) ndviChart.destroy();
+
+            const labels = data.map(d => d.date);
+            const values = data.map(d => d.ndvi);
+
+            ndviChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'NDVI_V_TIME',
+                        data: values,
+                        borderColor: '#ffffff',
+                        backgroundColor: 'rgba(255, 255, 255, 0.1)',
+                        fill: true,
+                        tension: 0,
+                        pointRadius: 2,
+                        pointBackgroundColor: '#ffffff'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            min: -1, max: 1,
+                            grid: { color: '#222' },
+                            ticks: { color: '#888', font: { family: 'monospace' } }
+                        },
+                        x: {
+                            grid: { display: false },
+                            ticks: { color: '#888', font: { family: 'monospace' } }
+                        }
+                    },
+                    plugins: {
+                        legend: { display: false }
+                    }
+                }
+            });
+        }
+
+        // Timelapse Logic
+        const playBtn = document.getElementById('playBtn');
+        const slider = document.getElementById('frameSlider');
+
+        playBtn.addEventListener('click', () => {
+            if (isPlaying) stopTimelapse();
+            else startTimelapse();
+        });
+
+        slider.addEventListener('input', (e) => {
+            stopTimelapse();
+            showFrame(parseInt(e.target.value));
+        });
+
+        function startTimelapse() {
+            isPlaying = true;
+            playBtn.innerText = 'PAUSE';
+            playInterval = setInterval(() => {
+                let next = (currentFrame + 1) % frames.length;
+                showFrame(next);
+            }, 500);
+        }
+
+        function stopTimelapse() {
+            isPlaying = false;
+            playBtn.innerText = 'PLAY';
+            clearInterval(playInterval);
+        }
+    </script>
+</body>
+
+</html>
