@@ -1,0 +1,17 @@
+flask
+flask-cors
+planetary-computer
+pystac-client
+stackstac
+rasterio
+rioxarray
+xarray
+numpy
+pandas
+geopandas
+matplotlib
+python-dotenv
+requests
+psutil<6.0.0
+Pillow
+gunicorn
